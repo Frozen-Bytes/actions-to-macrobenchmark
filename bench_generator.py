@@ -141,16 +141,16 @@ class GeneratedFrameTimingBenchmark {{
         setupBlock = {{
             val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
             device.pressHome()
+
+            // Launch the app
+            startActivityAndWait()
+
+            // Wait until device is idle and app window is visible
+            device.waitForIdle()
+            device.wait(Until.hasObject(By.pkg(TARGET_PACKAGE_NAME).depth(0)), UI_TIMEOUT_MS)
         }}
     ) {{
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-
-        // Launch the app
-        startActivityAndWait()
-
-        // Wait until device is idle and app window is visible
-        device.waitForIdle()
-        device.wait(Until.hasObject(By.pkg(TARGET_PACKAGE_NAME).depth(0)), UI_TIMEOUT_MS)
 
         // Execute JSON injected actions
         {action_code}
@@ -182,16 +182,16 @@ class GeneratedMemoryUsageBenchmark {{
         setupBlock = {{
             val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
             device.pressHome()
+
+            // Launch the app
+            startActivityAndWait()
+
+            // Wait until device is idle and app window is visible
+            device.waitForIdle()
+            device.wait(Until.hasObject(By.pkg(TARGET_PACKAGE_NAME).depth(0)), UI_TIMEOUT_MS)
         }}
     ) {{
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-
-        // Launch the app
-        startActivityAndWait()
-
-        // Wait until device is idle and app window is visible
-        device.waitForIdle()
-        device.wait(Until.hasObject(By.pkg(TARGET_PACKAGE_NAME).depth(0)), UI_TIMEOUT_MS)
 
         // Execute JSON injected actions
         {action_code}
