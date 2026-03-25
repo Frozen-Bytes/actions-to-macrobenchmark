@@ -22,6 +22,8 @@ def action_to_kotlin(action: dict) -> str:
     elif t == "long_press":
         x = action.get("x", 0.5)
         y = action.get("y", 0.5)
+        # A long press is a swipe from the same point to itself
+        # The last parameter (100) controls duration, ~100 steps ≈ ~1 second long press
         return f'device.swipe((device.displayWidth * {x}).toInt(), (device.displayHeight * {y}).toInt(), (device.displayWidth * {x}).toInt(), (device.displayHeight * {y}).toInt(), 100)'
 
     elif t == "input_text":
@@ -198,7 +200,6 @@ class GeneratedMemoryUsageBenchmark {{
 """
 
 def main():
-    # Load JSON file if it exists, otherwise use dummy actions for testing
     if os.path.exists(ACTIONS_FILE):
         with open(ACTIONS_FILE, "r") as f:
             actions = json.load(f)
