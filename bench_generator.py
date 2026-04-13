@@ -2,219 +2,77 @@ import argparse
 import os
 import json
 import sys
-
-
-# ---------------------------------------------------------------------------
-# CLI arguments
-# ---------------------------------------------------------------------------
+import re
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Generate Kotlin macrobenchmark files from an AI-recorded actions JSON.\n"
-            "If --actions-file is omitted, only the startup benchmark is written."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
+    parser = argparse.ArgumentParser(description="Generate Kotlin macrobenchmarks from AI JSON logs.")
 
-    # Packages
-    parser.add_argument(
-        "--package-name",
-        default="com.google.samples.apps.nowinandroid.macrobenchmark",
-        help="Benchmark module package name.",
-    )
-    parser.add_argument(
-        "--target-package-name",
-        default="com.google.samples.apps.nowinandroid",
-        help="Package name of the app under test.",
-    )
-
-    # I/O
-    parser.add_argument(
-        "--actions-file",
-        default=None,
-        metavar="PATH",
-        help="Path to the AI-recorded actions JSON. Omit to generate only the startup benchmark.",
-    )
-
-    parser.add_argument(
-        "--output-dir",
-        default="benchmarks/src/main/java/com/google/samples/apps/nowinandroid/macrobenchmark",
-        metavar="DIR",
-        help="Directory where the generated .kt files will be written.",
-    )
-
-    # UI
+    parser.add_argument("--package-name", default="com.google.samples.apps.nowinandroid.Generator")
+    parser.add_argument("--target-package-name", default="com.google.samples.apps.nowinandroid.demo")
+    parser.add_argument("--actions-dir", default="gelab-zero/running_log/action_logs")
+    parser.add_argument("--output-dir", default="benchmarks/src/main/kotlin/com/google/samples/apps/nowinandroid/Generator")
     parser.add_argument("--ui-timeout-ms", type=int, default=5000)
-
-    # Screen dimensions
-    parser.add_argument("--original-screen-width",  type=float, default=1000.0)
+    parser.add_argument("--original-screen-width", type=float, default=1000.0)
     parser.add_argument("--original-screen-height", type=float, default=1000.0)
-
-    # Startup benchmark
-    parser.add_argument("--skip-startup", action="store_true", help="Pass this flag to skip generating the startup benchmark.")
     parser.add_argument("--startup-warmup-iterations", type=int, default=1)
-    parser.add_argument("--startup-iterations",        type=int, default=10)
-    parser.add_argument("--startup-file-name", default="GeneratedStartupBenchmark.kt")
-
-    # Frame-timing benchmark
+    parser.add_argument("--startup-iterations", type=int, default=10)
     parser.add_argument("--frame-warmup-iterations", type=int, default=3)
-    parser.add_argument("--frame-iterations",        type=int, default=10)
-    parser.add_argument("--frame-file-name", default="GeneratedFrameTimingBenchmark.kt")
-
-    # Memory benchmark
+    parser.add_argument("--frame-iterations", type=int, default=10)
     parser.add_argument("--memory-warmup-iterations", type=int, default=3)
-    parser.add_argument("--memory-iterations",        type=int, default=10)
-    parser.add_argument("--memory-file-name", default="GeneratedMemoryUsageBenchmark.kt")
+    parser.add_argument("--memory-iterations", type=int, default=10)
 
     return parser.parse_args()
-
-
-# ---------------------------------------------------------------------------
-# Coordinate scaling
-# ---------------------------------------------------------------------------
 
 def make_scalers(orig_width: float, orig_height: float):
     def scale_x(x) -> str:
         return f"(({float(x)}f / {orig_width}f) * device.displayWidth).toInt()"
-
     def scale_y(y) -> str:
         return f"(({float(y)}f / {orig_height}f) * device.displayHeight).toInt()"
-
     return scale_x, scale_y
-
-
-# ---------------------------------------------------------------------------
-# Shell-text escaping
-# ---------------------------------------------------------------------------
 
 def escape_shell_text(text: str) -> str:
     text = text.replace("\\", "\\\\").replace('"', '\\"')
     for ch in ["'", "`", "$", "!", "&", "|", ";", "<", ">", "(", ")", "{", "}"]:
         text = text.replace(ch, f"\\{ch}")
-    text = text.replace(" ", "%s")
-    return text
-
-
-# ---------------------------------------------------------------------------
-# Action -> Kotlin
-# ---------------------------------------------------------------------------
+    return text.replace(" ", "%s")
 
 def action_to_kotlin(action: dict, scale_x, scale_y) -> str:
-    t = action.get("action_type")
-    if not t:
-        raise ValueError(f"Action is missing 'action_type': {action}")
-    t = t.upper()
+    t = action.get("action_type", "").upper()
 
     if t in ("AWAKE", "COMPLETE", "ABORT", "INFO"):
         return f"// ACTION: {t}"
-
     elif t == "CLICK":
-        if not action.get("point"):
-            raise ValueError(f"Missing 'point' in CLICK action: {action}")
         x, y = action["point"]
         return f"device.click({scale_x(x)}, {scale_y(y)})"
-
     elif t == "LONGPRESS":
-        if not action.get("point"):
-            raise ValueError(f"Missing 'point' in LONGPRESS action: {action}")
-        if "duration" not in action:
-            raise ValueError(f"Missing 'duration' in LONGPRESS action: {action}")
-
         x, y = action["point"]
         duration_s = float(action["duration"])
         steps = max(1, int((duration_s * 1000) / 5))
-        sx, sy = scale_x(x), scale_y(y)
-        return f"device.swipe({sx}, {sy}, {sx}, {sy}, {steps}) // {duration_s}s long press"
-
+        return f"device.swipe({scale_x(x)}, {scale_y(y)}, {scale_x(x)}, {scale_y(y)}, {steps})"
     elif t == "TYPE":
-        if "value" not in action:
-            raise ValueError(f"Missing 'value' in TYPE action: {action}")
         commands = []
-        point = action.get("point")
-        if point:
-            x, y = point
-            commands.append(f"device.click({scale_x(x)}, {scale_y(y)})")
-            commands.append("Thread.sleep(500L)")
-
-        text = escape_shell_text(action["value"])
-        commands.append(f'device.executeShellCommand("input text {text}")')
+        if "point" in action:
+            x, y = action["point"]
+            commands.extend([f"device.click({scale_x(x)}, {scale_y(y)})", "Thread.sleep(500L)"])
+        commands.append(f'device.executeShellCommand("input text {escape_shell_text(action["value"])}")')
         return "\n        ".join(commands)
-
     elif t == "SLIDE":
-        if "point1" not in action:
-            raise ValueError(f"Missing 'point1' in SLIDE action: {action}")
-
-        # Fallback for AI mistakes (using 'point' instead of 'point2')
-        p2 = action.get("point2") or action.get("point")
-        if not p2:
-            raise ValueError(f"Missing 'point2' (or 'point') in SLIDE action: {action}")
-
         x1, y1 = action["point1"]
-        x2, y2 = p2
-
-        # Fallback for missing duration
-        if "duration" not in action:
-            print(f"[WARNING] Missing 'duration' in SLIDE action. Defaulting to 0.5s. Action: {action}", file=sys.stderr)
-            duration_s = 0.1
-        else:
-            duration_s = float(action["duration"])
-
+        x2, y2 = action.get("point2", action.get("point"))
+        duration_s = float(action.get("duration", 0.1))
         steps = max(1, int((duration_s * 1000) / 5))
-        return (
-            f"device.swipe({scale_x(x1)}, {scale_y(y1)}, "
-            f"{scale_x(x2)}, {scale_y(y2)}, {steps}) // {duration_s}s slide"
-        )
-
+        return f"device.swipe({scale_x(x1)}, {scale_y(y1)}, {scale_x(x2)}, {scale_y(y2)}, {steps})"
     elif t == "WAIT":
-        if "seconds" not in action:
-            raise ValueError(f"Missing 'seconds' in WAIT action: {action}")
         return f"Thread.sleep({int(float(action['seconds']) * 1000)}L)"
 
-    raise ValueError(f"Unknown action_type '{t}' in: {action}")
-
-
-# ---------------------------------------------------------------------------
-# Actions extraction
-# ---------------------------------------------------------------------------
+    raise ValueError(f"Unknown action_type '{t}'")
 
 def extract_actions(file_path: str, scale_x, scale_y) -> list[str]:
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Actions file not found: '{file_path}'")
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in '{file_path}': {e}")
-
-    # Handle both direct lists and dicts containing "actions"
-    if isinstance(data, list):
-        actions_list = data
-    elif isinstance(data, dict):
-        actions_list = data.get("actions", [])
-    else:
-        raise ValueError(f"Unexpected JSON structure in '{file_path}'.")
-
-    if not actions_list:
-        raise ValueError(f"No actions found in '{file_path}'.")
-
-    kotlin_lines: list[str] = []
-    for i, action in enumerate(actions_list):
-        try:
-            line = action_to_kotlin(action, scale_x, scale_y)
-        except ValueError as e:
-            raise ValueError(f"Action #{i}: {e}") from None
-
-        if line:
-            kotlin_lines.append(line)
-
-    return kotlin_lines
-
-
-# ---------------------------------------------------------------------------
-# Kotlin file generators
-# ---------------------------------------------------------------------------
+    actions_list = data if isinstance(data, list) else data.get("actions", [])
+    return [line for a in actions_list if (line := action_to_kotlin(a, scale_x, scale_y))]
 
 def get_imports(package_name: str) -> str:
     return f"""package {package_name}
@@ -235,7 +93,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 """
 
-
 def generate_startup_benchmark(args: argparse.Namespace) -> str:
     return get_imports(args.package_name) + f"""
 @RunWith(AndroidJUnit4::class)
@@ -253,9 +110,7 @@ class GeneratedStartupBenchmark {{
             warmupIterations = {args.startup_warmup_iterations},
         ),
         iterations = {args.startup_iterations},
-        setupBlock = {{
-            pressHome()
-        }},
+        setupBlock = {{ pressHome() }},
     ) {{
         startActivityAndWait()
         device.waitForIdle()
@@ -264,23 +119,10 @@ class GeneratedStartupBenchmark {{
 }}
 """
 
-
-def generate_action_benchmark(
-    args: argparse.Namespace,
-    class_name: str,
-    metric: str,
-    startup_mode: str,
-    warmup_iters: int,
-    iters: int,
-    action_code: str,
-    extra_annotations: list[str] | None = None,
-) -> str:
-    annotation_block = ""
-    if extra_annotations:
-        annotation_block = "\n".join(extra_annotations) + "\n"
-
+def generate_action_benchmark(args, class_name, metric, iters, action_code, warmup_iters, annotations="") -> str:
     return get_imports(args.package_name) + f"""
-{annotation_block}@RunWith(AndroidJUnit4::class)
+{annotations}
+@RunWith(AndroidJUnit4::class)
 class {class_name} {{
     @get:Rule
     val benchmarkRule = MacrobenchmarkRule()
@@ -289,7 +131,7 @@ class {class_name} {{
     fun measure() = benchmarkRule.measureRepeated(
         packageName = "{args.target_package_name}",
         metrics = listOf({metric}),
-        startupMode = StartupMode.{startup_mode},
+        startupMode = StartupMode.WARM,
         compilationMode = CompilationMode.Partial(
             baselineProfileMode = BaselineProfileMode.Disable,
             warmupIterations = {warmup_iters},
@@ -307,94 +149,45 @@ class {class_name} {{
 }}
 """
 
-
-# ---------------------------------------------------------------------------
-# File writing
-# ---------------------------------------------------------------------------
-
 def write_file(filepath: str, content: str) -> None:
-    try:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
-        print(f"[generate_benchmarks] Written:  {filepath}")
-    except OSError as e:
-        print(f"[generate_benchmarks] ERROR writing '{filepath}': {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content.strip() + "\n")
 
 def main() -> None:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # Startup benchmark
-    # ------------------------------------------------------------------
-    if args.skip_startup:
-        print("[generate_benchmarks] Skipped generating Startup benchmark due to --skip-startup flag.")
-    else:
-        startup_path = os.path.join(args.output_dir, args.startup_file_name)
-        write_file(startup_path, generate_startup_benchmark(args))
+    write_file(os.path.join(args.output_dir, "GeneratedStartupBenchmark.kt"), generate_startup_benchmark(args))
 
-    # ------------------------------------------------------------------
-    # Action-based benchmarks
-    # ------------------------------------------------------------------
-    if not args.actions_file:
-        print(
-            "[generate_benchmarks] No --actions-file provided. "
-            "Frame and memory benchmarks were not generated."
-        )
-        return
+    if not os.path.exists(args.actions_dir):
+        sys.exit(0)
 
     scale_x, scale_y = make_scalers(args.original_screen_width, args.original_screen_height)
 
-    try:
-        actions = extract_actions(args.actions_file, scale_x, scale_y)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"[generate_benchmarks] ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+    for filename in os.listdir(args.actions_dir):
+        if not filename.endswith(".json"):
+            continue
 
-    if not actions:
-        print(
-            "[generate_benchmarks] WARNING: No executable actions found — "
-            "the frame and memory benchmarks will measure an idle app.",
-            file=sys.stderr,
-        )
+        filepath = os.path.join(args.actions_dir, filename)
+        safe_name = re.sub(r'\W', '_', os.path.splitext(filename)[0])
 
-    action_code = "\n        ".join(actions)
+        try:
+            actions = extract_actions(filepath, scale_x, scale_y)
+            if not actions: continue
 
-    write_file(
-        os.path.join(args.output_dir, args.frame_file_name),
-        generate_action_benchmark(
-            args,
-            class_name="GeneratedFrameTimingBenchmark",
-            metric="FrameTimingMetric()",
-            startup_mode="WARM",
-            warmup_iters=args.frame_warmup_iterations,
-            iters=args.frame_iterations,
-            action_code=action_code,
-        ),
-    )
+            action_code = "\n        ".join(actions)
 
-    write_file(
-        os.path.join(args.output_dir, args.memory_file_name),
-        generate_action_benchmark(
-            args,
-            class_name="GeneratedMemoryUsageBenchmark",
-            metric="MemoryUsageMetric(MemoryUsageMetric.Mode.Max)",
-            startup_mode="WARM",
-            warmup_iters=args.memory_warmup_iterations,
-            iters=args.memory_iterations,
-            action_code=action_code,
-            extra_annotations=["@OptIn(ExperimentalMetricApi::class)"],
-        ),
-    )
+            write_file(
+                os.path.join(args.output_dir, f"GeneratedFrameTimingBenchmark_{safe_name}.kt"),
+                generate_action_benchmark(args, f"GeneratedFrameTimingBenchmark_{safe_name}", "FrameTimingMetric()", args.frame_iterations, action_code, args.frame_warmup_iterations)
+            )
 
-    print(f"[generate_benchmarks] Done. Output: '{args.output_dir}/'")
-
+            write_file(
+                os.path.join(args.output_dir, f"GeneratedMemoryUsageBenchmark_{safe_name}.kt"),
+                generate_action_benchmark(args, f"GeneratedMemoryUsageBenchmark_{safe_name}", "MemoryUsageMetric(MemoryUsageMetric.Mode.Max)", args.memory_iterations, action_code, args.memory_warmup_iterations, "@OptIn(ExperimentalMetricApi::class)")
+            )
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()
