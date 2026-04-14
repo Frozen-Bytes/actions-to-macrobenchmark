@@ -157,7 +157,7 @@ def main() -> None:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
-    startup_filepath = os.path.join(args.output_dir, "GeneratedStartupBenchmark.kt")
+    startup_filepath = os.path.join(args.output_dir, "StartupBenchmark.kt")
     if not os.path.exists(startup_filepath):
         write_file(startup_filepath, generate_startup_benchmark(args))
         print(f"[INFO] Generated: {startup_filepath}")
@@ -183,13 +183,13 @@ def main() -> None:
             action_code = "\n        ".join(actions)
 
             write_file(
-                os.path.join(args.output_dir, f"GeneratedFrameTimingBenchmark_{safe_name}.kt"),
-                generate_action_benchmark(args, f"GeneratedFrameTimingBenchmark_{safe_name}", "FrameTimingMetric()", args.frame_iterations, action_code, args.frame_warmup_iterations)
+                os.path.join(args.output_dir, f"{safe_name}_FT.kt"),
+                generate_action_benchmark(args, f"{safe_name}_FT", "FrameTimingMetric()", args.frame_iterations, action_code, args.frame_warmup_iterations)
             )
 
             write_file(
-                os.path.join(args.output_dir, f"GeneratedMemoryUsageBenchmark_{safe_name}.kt"),
-                generate_action_benchmark(args, f"GeneratedMemoryUsageBenchmark_{safe_name}", "MemoryUsageMetric(MemoryUsageMetric.Mode.Max)", args.memory_iterations, action_code, args.memory_warmup_iterations, "@OptIn(ExperimentalMetricApi::class)")
+                os.path.join(args.output_dir, f"{safe_name}_MU.kt"),
+                generate_action_benchmark(args, f"{safe_name}_MU", "MemoryUsageMetric(MemoryUsageMetric.Mode.Max)", args.memory_iterations, action_code, args.memory_warmup_iterations, "@OptIn(ExperimentalMetricApi::class)")
             )
             print(f"[INFO] Generated benchmarks for: {filename}")
         except Exception as e:
