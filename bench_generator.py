@@ -6,12 +6,12 @@ import re
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Kotlin macrobenchmarks from AI JSON logs.")
-
     parser.add_argument("--package-name", default="com.google.samples.apps.nowinandroid.Generator")
     parser.add_argument("--target-package-name", default="com.google.samples.apps.nowinandroid.demo")
     parser.add_argument("--actions-dir", default="gelab-zero/running_log/action_logs")
     parser.add_argument("--output-dir", default="benchmarks/src/main/kotlin/com/google/samples/apps/nowinandroid/Generator")
     parser.add_argument("--ui-timeout-ms", type=int, default=5000)
+    parser.add_argument("--smart-wait-ms", type=int, default=1000)
     parser.add_argument("--original-screen-width", type=float, default=1000.0)
     parser.add_argument("--original-screen-height", type=float, default=1000.0)
     parser.add_argument("--startup-warmup-iterations", type=int, default=1)
@@ -20,7 +20,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-iterations", type=int, default=10)
     parser.add_argument("--memory-warmup-iterations", type=int, default=3)
     parser.add_argument("--memory-iterations", type=int, default=10)
-
     return parser.parse_args()
 
 def make_scalers(orig_width: float, orig_height: float):
@@ -36,43 +35,44 @@ def escape_shell_text(text: str) -> str:
         text = text.replace(ch, f"\\{ch}")
     return text.replace(" ", "%s")
 
-def action_to_kotlin(action: dict, scale_x, scale_y) -> str:
+def action_to_kotlin(action: dict, scale_x, scale_y, smart_wait_ms: int) -> str:
     t = action.get("action_type", "").upper()
+    smart_wait = f"device.waitForIdle()\n        Thread.sleep({smart_wait_ms}L)"
 
     if t in ("AWAKE", "COMPLETE", "ABORT", "INFO"):
         return f"// ACTION: {t}"
     elif t == "CLICK":
         x, y = action["point"]
-        return f"device.click({scale_x(x)}, {scale_y(y)})"
+        return f"device.click({scale_x(x)}, {scale_y(y)})\n        {smart_wait}"
     elif t == "LONGPRESS":
         x, y = action["point"]
         duration_s = float(action["duration"])
         steps = max(1, int((duration_s * 1000) / 5))
-        return f"device.swipe({scale_x(x)}, {scale_y(y)}, {scale_x(x)}, {scale_y(y)}, {steps})"
+        return f"device.swipe({scale_x(x)}, {scale_y(y)}, {scale_x(x)}, {scale_y(y)}, {steps})\n        {smart_wait}"
     elif t == "TYPE":
         commands = []
         if "point" in action:
             x, y = action["point"]
-            commands.extend([f"device.click({scale_x(x)}, {scale_y(y)})", "Thread.sleep(500L)"])
+            commands.extend([f"device.click({scale_x(x)}, {scale_y(y)})", smart_wait])
         commands.append(f'device.executeShellCommand("input text {escape_shell_text(action["value"])}")')
+        commands.append(smart_wait)
         return "\n        ".join(commands)
     elif t == "SLIDE":
         x1, y1 = action["point1"]
         x2, y2 = action.get("point2", action.get("point"))
         duration_s = float(action.get("duration", 0.1))
         steps = max(1, int((duration_s * 1000) / 5))
-        return f"device.swipe({scale_x(x1)}, {scale_y(y1)}, {scale_x(x2)}, {scale_y(y2)}, {steps})"
+        return f"device.swipe({scale_x(x1)}, {scale_y(y1)}, {scale_x(x2)}, {scale_y(y2)}, {steps})\n        {smart_wait}"
     elif t == "WAIT":
-        return f"Thread.sleep({int(float(action['seconds']) * 1000)}L)"
+        return f"device.waitForIdle()\n        Thread.sleep({int(float(action['seconds']) * 1000)}L)"
 
     raise ValueError(f"Unknown action_type '{t}'")
 
-def extract_actions(file_path: str, scale_x, scale_y) -> list[str]:
+def extract_actions(file_path: str, scale_x, scale_y, smart_wait_ms: int) -> list[str]:
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-
     actions_list = data if isinstance(data, list) else data.get("actions", [])
-    return [line for a in actions_list if (line := action_to_kotlin(a, scale_x, scale_y))]
+    return [line for a in actions_list if (line := action_to_kotlin(a, scale_x, scale_y, smart_wait_ms))]
 
 def get_imports(package_name: str) -> str:
     return f"""package {package_name}
@@ -157,7 +157,12 @@ def main() -> None:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
-    write_file(os.path.join(args.output_dir, "GeneratedStartupBenchmark.kt"), generate_startup_benchmark(args))
+    startup_filepath = os.path.join(args.output_dir, "GeneratedStartupBenchmark.kt")
+    if not os.path.exists(startup_filepath):
+        write_file(startup_filepath, generate_startup_benchmark(args))
+        print(f"[INFO] Generated: {startup_filepath}")
+    else:
+        print(f"[INFO] Skipped: {startup_filepath} (Already exists)")
 
     if not os.path.exists(args.actions_dir):
         sys.exit(0)
@@ -172,7 +177,7 @@ def main() -> None:
         safe_name = re.sub(r'\W', '_', os.path.splitext(filename)[0])
 
         try:
-            actions = extract_actions(filepath, scale_x, scale_y)
+            actions = extract_actions(filepath, scale_x, scale_y, args.smart_wait_ms)
             if not actions: continue
 
             action_code = "\n        ".join(actions)
@@ -186,8 +191,9 @@ def main() -> None:
                 os.path.join(args.output_dir, f"GeneratedMemoryUsageBenchmark_{safe_name}.kt"),
                 generate_action_benchmark(args, f"GeneratedMemoryUsageBenchmark_{safe_name}", "MemoryUsageMetric(MemoryUsageMetric.Mode.Max)", args.memory_iterations, action_code, args.memory_warmup_iterations, "@OptIn(ExperimentalMetricApi::class)")
             )
-        except Exception:
-            pass
+            print(f"[INFO] Generated benchmarks for: {filename}")
+        except Exception as e:
+            print(f"[ERROR] Failed to process {filename}: {e}")
 
 if __name__ == "__main__":
     main()
