@@ -4,6 +4,10 @@ import json
 import sys
 import re
 
+DEFAULT_ITERATIONS = 10
+DEFAULT_WARMUP_ITERATIONS = 3
+DEFAULT_STARTUP_WARMUP_ITERATIONS = 1
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Kotlin macrobenchmarks from AI JSON logs.")
     parser.add_argument("--package-name", default="com.google.samples.apps.nowinandroid.Generator")
@@ -14,12 +18,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smart-wait-ms", type=int, default=1000)
     parser.add_argument("--original-screen-width", type=float, default=1000.0)
     parser.add_argument("--original-screen-height", type=float, default=1000.0)
-    parser.add_argument("--startup-warmup-iterations", type=int, default=1)
-    parser.add_argument("--startup-iterations", type=int, default=10)
-    parser.add_argument("--frame-warmup-iterations", type=int, default=3)
-    parser.add_argument("--frame-iterations", type=int, default=10)
-    parser.add_argument("--memory-warmup-iterations", type=int, default=3)
-    parser.add_argument("--memory-iterations", type=int, default=10)
+    parser.add_argument("--startup-warmup-iterations", type=int, default=DEFAULT_STARTUP_WARMUP_ITERATIONS)
+    parser.add_argument("--startup-iterations", type=int, default=DEFAULT_ITERATIONS)
+    parser.add_argument("--frame-warmup-iterations", type=int, default=DEFAULT_WARMUP_ITERATIONS)
+    parser.add_argument("--frame-iterations", type=int, default=DEFAULT_ITERATIONS)
+    parser.add_argument("--memory-warmup-iterations", type=int, default=DEFAULT_WARMUP_ITERATIONS)
+    parser.add_argument("--memory-iterations", type=int, default=DEFAULT_ITERATIONS)
+    parser.add_argument("--no-optimize", dest="optimize_multi_metric", action="store_false")
     return parser.parse_args()
 
 def make_scalers(orig_width: float, orig_height: float):
@@ -101,7 +106,7 @@ class GeneratedStartupBenchmark {{
     val benchmarkRule = MacrobenchmarkRule()
 
     @Test
-    fun measure() = benchmarkRule.measureRepeated(
+    fun startupTime() = benchmarkRule.measureRepeated(
         packageName = "{args.target_package_name}",
         metrics = listOf(StartupTimingMetric()),
         startupMode = StartupMode.COLD,
@@ -123,12 +128,12 @@ def generate_action_benchmark(args, class_name, metric, iters, action_code, warm
     return get_imports(args.package_name) + f"""
 {annotations}
 @RunWith(AndroidJUnit4::class)
-class {class_name} {{
+class Generated{class_name} {{
     @get:Rule
     val benchmarkRule = MacrobenchmarkRule()
 
     @Test
-    fun measure() = benchmarkRule.measureRepeated(
+    fun {class_name}() = benchmarkRule.measureRepeated(
         packageName = "{args.target_package_name}",
         metrics = listOf({metric}),
         startupMode = StartupMode.WARM,
@@ -182,15 +187,42 @@ def main() -> None:
 
             action_code = "\n        ".join(actions)
 
-            write_file(
-                os.path.join(args.output_dir, f"{safe_name}_FT.kt"),
-                generate_action_benchmark(args, f"{safe_name}_FT", "FrameTimingMetric()", args.frame_iterations, action_code, args.frame_warmup_iterations)
-            )
+            if args.optimize_multi_metric:
+                iterations = DEFAULT_ITERATIONS
+                warmup_iterations = DEFAULT_WARMUP_ITERATIONS
 
-            write_file(
-                os.path.join(args.output_dir, f"{safe_name}_MU.kt"),
-                generate_action_benchmark(args, f"{safe_name}_MU", "MemoryUsageMetric(MemoryUsageMetric.Mode.Max)", args.memory_iterations, action_code, args.memory_warmup_iterations, "@OptIn(ExperimentalMetricApi::class)")
-            )
+                if args.frame_iterations != args.memory_iterations:
+                    print(f"[WARN]: frame_iterations({args.frame_iterations}) != memory_iterations({args.memory_iterations}), defaulting to {iterations}")
+                else:
+                    iterations = args.frame_iterations
+
+                if args.frame_warmup_iterations != args.memory_warmup_iterations:
+                    print(f"[WARN]: frame_warmup_iterations({args.frame_warmup_iterations}) != memory_iterations({args.memory_warmup_iterations}), defaulting to {warmup_iterations}")
+                else:
+                    warmup_iterations = args.frame_warmup_iterations
+
+                write_file(
+                    os.path.join(args.output_dir, f"{safe_name}.kt"),
+                    generate_action_benchmark(
+                        args,
+                        f"{safe_name}",
+                        "MemoryUsageMetric(MemoryUsageMetric.Mode.Max), FrameTimingMetric()",
+                        iterations,
+                        action_code,
+                        warmup_iterations,
+                        "@OptIn(ExperimentalMetricApi::class)"
+                    )
+                )
+            else:
+                write_file(
+                    os.path.join(args.output_dir, f"{safe_name}_FT.kt"),
+                    generate_action_benchmark(args, f"{safe_name}_FT", "FrameTimingMetric()", args.frame_iterations, action_code, args.frame_warmup_iterations)
+                )
+
+                write_file(
+                    os.path.join(args.output_dir, f"{safe_name}_MU.kt"),
+                    generate_action_benchmark(args, f"{safe_name}_MU", "MemoryUsageMetric(MemoryUsageMetric.Mode.Max)", args.memory_iterations, action_code, args.memory_warmup_iterations, "@OptIn(ExperimentalMetricApi::class)")
+                )
             print(f"[INFO] Generated benchmarks for: {filename}")
         except Exception as e:
             print(f"[ERROR] Failed to process {filename}: {e}")
