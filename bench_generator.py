@@ -3,6 +3,7 @@ import os
 import json
 import sys
 import re
+from textwrap import indent
 
 DEFAULT_ITERATIONS = 10
 DEFAULT_WARMUP_ITERATIONS = 3
@@ -42,18 +43,18 @@ def escape_shell_text(text: str) -> str:
 
 def action_to_kotlin(action: dict, scale_x, scale_y, smart_wait_ms: int) -> str:
     t = action.get("action_type", "").upper()
-    smart_wait = f"device.waitForIdle()\n        Thread.sleep({smart_wait_ms}L)"
+    smart_wait = f"device.waitForIdle()\nThread.sleep({smart_wait_ms}L)"
 
     if t in ("AWAKE", "COMPLETE", "ABORT", "INFO"):
         return f"// ACTION: {t}"
     elif t == "CLICK":
         x, y = action["point"]
-        return f"device.click({scale_x(x)}, {scale_y(y)})\n        {smart_wait}"
+        return f"device.click({scale_x(x)}, {scale_y(y)})\n{smart_wait}"
     elif t == "LONGPRESS":
         x, y = action["point"]
         duration_s = float(action["duration"])
         steps = max(1, int((duration_s * 1000) / 5))
-        return f"device.swipe({scale_x(x)}, {scale_y(y)}, {scale_x(x)}, {scale_y(y)}, {steps})\n        {smart_wait}"
+        return f"device.swipe({scale_x(x)}, {scale_y(y)}, {scale_x(x)}, {scale_y(y)}, {steps})\n{smart_wait}"
     elif t == "TYPE":
         commands = []
         if "point" in action:
@@ -61,23 +62,51 @@ def action_to_kotlin(action: dict, scale_x, scale_y, smart_wait_ms: int) -> str:
             commands.extend([f"device.click({scale_x(x)}, {scale_y(y)})", smart_wait])
         commands.append(f'device.executeShellCommand("input text {escape_shell_text(action["value"])}")')
         commands.append(smart_wait)
-        return "\n        ".join(commands)
+        return "\n".join(commands)
     elif t == "SLIDE":
         x1, y1 = action["point1"]
         x2, y2 = action.get("point2", action.get("point"))
         duration_s = float(action.get("duration", 0.1))
         steps = max(1, int((duration_s * 1000) / 5))
-        return f"device.swipe({scale_x(x1)}, {scale_y(y1)}, {scale_x(x2)}, {scale_y(y2)}, {steps})\n        {smart_wait}"
+        return f"device.swipe({scale_x(x1)}, {scale_y(y1)}, {scale_x(x2)}, {scale_y(y2)}, {steps})\n{smart_wait}"
     elif t == "WAIT":
-        return f"device.waitForIdle()\n        Thread.sleep({int(float(action['seconds']) * 1000)}L)"
+        return f"device.waitForIdle()\nThread.sleep({int(float(action['seconds']) * 1000)}L)"
 
     raise ValueError(f"Unknown action_type '{t}'")
 
 def extract_actions(file_path: str, scale_x, scale_y, smart_wait_ms: int) -> list[str]:
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+
     actions_list = data if isinstance(data, list) else data.get("actions", [])
-    return [line for a in actions_list if (line := action_to_kotlin(a, scale_x, scale_y, smart_wait_ms))]
+
+    lines: list[str] = []
+
+    for action in actions_list:
+        action_kotlin = action_to_kotlin(action, scale_x, scale_y, smart_wait_ms)
+
+        if not action_kotlin:
+            continue
+
+        line = action_kotlin
+
+        comment_line: str = ""
+
+        if "cot" in action:
+            comment_line += f"cot: {action.get("cot", "")}\n"
+
+        if "explain" in action:
+            comment_line += f"explain: {action.get("explain", "")}\n"
+
+        if "summary" in action:
+            comment_line += f"summary: {action.get("summary", "")}"
+
+        if comment_line:
+            line = f'/*\n{indent(comment_line, prefix="  ")}\n */\n{line}\n'
+
+        lines.append(line)
+
+    return lines
 
 def get_imports(package_name: str) -> str:
     return f"""package {package_name}
@@ -149,7 +178,7 @@ class Generated{class_name} {{
             device.wait(Until.hasObject(By.pkg("{args.target_package_name}").depth(0)), {args.ui_timeout_ms}L)
         }},
     ) {{
-        {action_code}
+{action_code}
     }}
 }}
 """
@@ -185,7 +214,7 @@ def main() -> None:
             actions = extract_actions(filepath, scale_x, scale_y, args.smart_wait_ms)
             if not actions: continue
 
-            action_code = "\n        ".join(actions)
+            action_code = indent("\n".join(actions), prefix="        ")
 
             if args.optimize_multi_metric:
                 iterations = DEFAULT_ITERATIONS
